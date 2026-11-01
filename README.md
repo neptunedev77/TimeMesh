@@ -24,7 +24,7 @@ TimeMesh brings everyone's availability together and turns it into a clear pictu
 |:--|:--|
 | 🔗 **Easy to join** | Bring people in with a simple link. |
 | 🗓️ **Shared availability** | See your group's time in one place. |
-| 🌍 **Made for everywhere** | Plan across cities, countries, and time zones. |
+| 📆 **Beyond a single week** | Plan ahead across as many weeks as you need. |
 | 🤝 **Flexible by design** | Find the best moments, even when not everyone can make it. |
 
 ---
