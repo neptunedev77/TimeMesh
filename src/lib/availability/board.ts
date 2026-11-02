@@ -30,26 +30,6 @@ export function memberColor(index: number): string {
   return MEMBER_COLORS[index % MEMBER_COLORS.length];
 }
 
-/**
- * Paints a cell as one vertical lane per member, always in the same order, so each person
- * forms a continuous bar and a shared hour fills the whole cell.
- */
-export function laneBackground(memberIndexes: number[], total: number): string | undefined {
-  if (memberIndexes.length === 0 || total === 0) return undefined;
-
-  const width = 100 / total;
-  const stops = memberIndexes.map((index) => {
-    const start = index * width;
-    return `${memberColor(index)} ${start}% ${start + width}%`;
-  });
-  const gaps = Array.from({ length: total }, (_, index) => index)
-    .filter((index) => !memberIndexes.includes(index))
-    .map((index) => `transparent ${index * width}% ${(index + 1) * width}%`);
-  const ordered = [...stops, ...gaps].sort((a, b) => parseFloat(a.split(" ")[1]) - parseFloat(b.split(" ")[1]));
-
-  return `linear-gradient(90deg, ${ordered.join(", ")})`;
-}
-
 export type MatchState =
   | { kind: "waiting" }
   | { kind: "none" }

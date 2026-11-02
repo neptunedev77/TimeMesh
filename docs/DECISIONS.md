@@ -5,7 +5,8 @@
 | Name | The product is called TimeMesh. |
 | Simplicity | A project needs only a name. Everything happens on one board, with no settings or personal profile. |
 | New project defaults | Starts on the current week's Monday and runs for a year, in 30-minute cells, in `Europe/Lisbon`. |
-| Marking hours | People mark when they can. There is no separate "unavailable" state in the interface. |
+| Marking hours | People mark when they can, by dragging, Shift+click, or typing a short phrase such as "seg a sex 18-22". There is no separate "unavailable" state in the interface. |
+| Shift+click | Fills the rectangle from the last clicked cell, giving it that cell's state. |
 | Saving | Automatic, about half a second after a change. Each save replaces that week atomically through a database function. |
 | Live updates | The board asks for the group's hours every 5 seconds while visible. Supabase Realtime isn't used, because guests have no session. |
 | Best times | Bigger groups first, then longer periods, then earliest. Calculated in the browser with the compatibility engine, so they change as you mark. |

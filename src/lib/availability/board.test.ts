@@ -1,25 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { bestTimes, findMatches, laneBackground, MEMBER_COLORS, memberColor } from "./board";
+import { bestTimes, findMatches, MEMBER_COLORS, memberColor } from "./board";
 import { rangeKeys } from "./grid";
 
 const MONDAY = "2026-11-02";
 const hours = (date: string, start: string, end: string) => rangeKeys(date, start, end, 30);
 
-describe("laneBackground", () => {
-  it("is empty with nobody in the cell", () => {
-    expect(laneBackground([], 3)).toBeUndefined();
-  });
-
-  it("keeps each person in their own lane, with gaps for the others", () => {
-    expect(laneBackground([1], 2)).toBe(`linear-gradient(90deg, transparent 0% 50%, ${memberColor(1)} 50% 100%)`);
-  });
-
-  it("fills the whole cell when everyone can attend", () => {
-    expect(laneBackground([0, 1], 2)).toBe(
-      `linear-gradient(90deg, ${memberColor(0)} 0% 50%, ${memberColor(1)} 50% 100%)`,
-    );
-  });
-
+describe("memberColor", () => {
   it("reuses colors in large groups", () => {
     expect(memberColor(MEMBER_COLORS.length)).toBe(memberColor(0));
   });

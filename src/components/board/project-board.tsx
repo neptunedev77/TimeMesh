@@ -1,26 +1,22 @@
 "use client";
 
-import { Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, CloudOff, Copy, LoaderCircle } from "lucide-react";
+import { Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, CloudOff, LoaderCircle } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { locale, messages } from "@/i18n";
-import {
-  type BestTime,
-  bestTimes,
-  type BoardMember,
-  findMatches,
-  laneBackground,
-  memberColor,
-} from "@/lib/availability/board";
+import { type BestTime, bestTimes, type BoardMember, findMatches, memberColor } from "@/lib/availability/board";
 import { slotTimes, weekDates } from "@/lib/availability/grid";
+import { parseQuickInput, quickSelectionKeys } from "@/lib/availability/quick-input";
 import { addDays } from "@/lib/availability/timezone";
 import { cn } from "@/lib/utils";
 import { BoardGrid } from "./board-grid";
 import { MatchBanner } from "./match-banner";
+import { QuickBar } from "./quick-bar";
 
 const copy = messages.board;
 const SAVE_DELAY = 500;
 const REFRESH_INTERVAL = 5000;
 const DAY_START = "07:00";
+const UNDO_LIMIT = 30;
 
 const shortDate = new Intl.DateTimeFormat(locale, { day: "numeric", month: "short", timeZone: "UTC" });
 const formatShort = (date: string) => shortDate.format(new Date(`${date}T00:00:00Z`));
@@ -52,14 +48,6 @@ function initials(name: string) {
   return name.trim().charAt(0).toUpperCase();
 }
 
-function describeBest({ startKey, endKey }: BestTime) {
-  const [date, start] = startKey.split("T");
-  const [, end] = endKey.split("T");
-  const weekday = messages.weekdays[(new Date(`${date}T00:00:00Z`).getUTCDay() + 6) % 7];
-
-  return { day: `${weekday} ${formatShort(date)}`, hours: `${start}–${end}` };
-}
-
 export function ProjectBoard({
   load,
   save,
@@ -82,8 +70,9 @@ export function ProjectBoard({
   const [saveState, setSaveState] = useState<SaveState>("idle");
   const [inspected, setInspected] = useState<string | null>(null);
   const [personHighlight, setPersonHighlight] = useState<string | null>(null);
-  const [bestHighlight, setBestHighlight] = useState<number | null>(null);
+  const [focusedTime, setFocusedTime] = useState<BestTime | null>(null);
   const [showEarly, setShowEarly] = useState(false);
+  const [undoStack, setUndoStack] = useState<ReadonlySet<string>[]>([]);
 
   // What still has to reach the server, kept outside React state so saves never overlap.
   const pending = useRef(new Map<string, string[]>());
@@ -125,10 +114,8 @@ export function ProjectBoard({
     retry.current = flush;
   }, [flush]);
 
-  const paint = useCallback(
-    (keys: string[], add: boolean, base: ReadonlySet<string>) => {
-      const next = new Set(base);
-      keys.forEach((key) => (add ? next.add(key) : next.delete(key)));
+  const commit = useCallback(
+    (next: ReadonlySet<string>) => {
       setMine(next);
       const cells = [...next];
       pending.current.set(weekRef.current, cells);
@@ -145,6 +132,37 @@ export function ProjectBoard({
     },
     [flush, memberId],
   );
+
+  const paint = useCallback(
+    (keys: string[], add: boolean, base: ReadonlySet<string>) => {
+      const next = new Set(base);
+      keys.forEach((key) => (add ? next.add(key) : next.delete(key)));
+      // A drag repaints from the same starting point, which only counts as one step to undo.
+      setUndoStack((stack) => (stack.at(-1) === base ? stack : [...stack, base].slice(-UNDO_LIMIT)));
+      commit(next);
+    },
+    [commit],
+  );
+
+  const undo = useCallback(() => {
+    const previous = undoStack.at(-1);
+    if (!previous) return;
+
+    setUndoStack(undoStack.slice(0, -1));
+    commit(previous);
+  }, [commit, undoStack]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const isTyping = (event.target as Element).closest?.("input, textarea");
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z" && !event.shiftKey && !isTyping) {
+        event.preventDefault();
+        undo();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [undo]);
 
   useEffect(() => {
     const warn = (event: BeforeUnloadEvent) => {
@@ -173,8 +191,9 @@ export function ProjectBoard({
     void flush();
     weekRef.current = next;
     setWeek(next);
-    setBestHighlight(null);
+    setFocusedTime(null);
     setInspected(null);
+    setUndoStack([]);
 
     const cached = cache.current.get(next);
     if (cached) {
@@ -197,8 +216,8 @@ export function ProjectBoard({
   }
 
   const dates = useMemo(() => weekDates(week), [week]);
-
   const plannedDates = useMemo(() => dates.filter((date) => date >= startDate && date <= endDate), [dates, startDate, endDate]);
+
   async function copyPreviousWeek() {
     const result = await load(addDays(week, -7)).catch(() => null);
     if (!result || !("members" in result)) return;
@@ -213,6 +232,15 @@ export function ProjectBoard({
     if (keys.length > 0) paint(keys, true, mine);
   }
 
+  function applyQuickInput(text: string) {
+    const selection = parseQuickInput(text, plannedDates, today);
+    if (!selection) return false;
+
+    const keys = quickSelectionKeys(selection, slotMinutes).filter((key) => plannedDates.includes(key.split("T")[0]));
+    paint(keys, !selection.remove, mine);
+    return true;
+  }
+
   const hasPrevious = addDays(week, -1) >= startDate;
   const hasNext = addDays(week, 7) <= endDate;
 
@@ -221,6 +249,10 @@ export function ProjectBoard({
     () => members.map((member) => (member.id === memberId ? { ...member, cells: [...mine] } : member)),
     [members, memberId, mine],
   );
+  const gridPeople = useMemo(
+    () => liveMembers.map(({ id, cells }, index) => ({ id, cells, color: memberColor(index) })),
+    [liveMembers],
+  );
 
   const counts = useMemo(() => {
     const result = new Map<string, number>();
@@ -228,180 +260,149 @@ export function ProjectBoard({
     return result;
   }, [liveMembers]);
 
-  const backgrounds = useMemo(() => {
-    const lanes = new Map<string, number[]>();
-    liveMembers.forEach(({ cells }, index) =>
-      cells.forEach((key) => lanes.set(key, [...(lanes.get(key) ?? []), index])),
-    );
-    return new Map([...lanes].map(([key, indexes]) => [key, laneBackground(indexes, liveMembers.length) ?? ""]));
-  }, [liveMembers]);
-
   const allTimes = useMemo(() => bestTimes(liveMembers, week, slotMinutes, 12), [liveMembers, week, slotMinutes]);
   const matchState = useMemo(() => findMatches(liveMembers, allTimes), [liveMembers, allTimes]);
   const matches = useMemo(() => ("matches" in matchState ? matchState.matches : []), [matchState]);
-  const best = useMemo(
+  const options = useMemo(
     () =>
       allTimes
         .filter(({ participantIds }) => participantIds.length >= 2)
-        .filter((time) => !matches.includes(time))
-        .slice(0, 4),
+        .filter((time) => time !== matches[0])
+        .slice(0, 5),
     [allTimes, matches],
   );
 
-  const hasEarlyHours = useMemo(() => [...mine, ...counts.keys()].some((key) => key.split("T")[1] < DAY_START), [mine, counts]);
+  const hasEarlyHours = useMemo(() => [...counts.keys()].some((key) => key.split("T")[1] < DAY_START), [counts]);
   const isEarlyVisible = showEarly || hasEarlyHours;
   const times = useMemo(
     () => slotTimes(slotMinutes).filter((time) => isEarlyVisible || time >= DAY_START),
     [slotMinutes, isEarlyVisible],
   );
 
-  const highlight = useMemo(() => {
-    if (bestHighlight !== null && best[bestHighlight]) return new Set(best[bestHighlight].keys);
-    const person = liveMembers.find(({ id }) => id === personHighlight);
-    return person ? new Set(person.cells) : null;
-  }, [best, bestHighlight, liveMembers, personHighlight]);
+  const highlight = useMemo(() => (focusedTime ? new Set(focusedTime.keys) : null), [focusedTime]);
 
   const nameOf = (id: string) => (id === memberId ? copy.you : (members.find((member) => member.id === id)?.name ?? ""));
-  const inspectedMembers = inspected
-    ? liveMembers.filter(({ cells }) => cells.includes(inspected))
-    : [];
-  const inspectedOthers = inspected
-    ? liveMembers.filter(({ cells }) => !cells.includes(inspected))
-    : [];
+  const inspectedMembers = inspected ? liveMembers.filter(({ cells }) => cells.includes(inspected)) : [];
+  const inspectedOthers = inspected ? liveMembers.filter(({ cells }) => !cells.includes(inspected)) : [];
 
   return (
-    <div className="flex flex-col gap-5">
-      <MatchBanner state={matchState} people={liveMembers} describe={describeBest} />
-      <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_17rem]">
-      <div className="flex min-w-0 flex-col gap-3">
-        <div className="flex items-center justify-between gap-2">
-          <div className="flex items-center gap-1">
-            <button
-              type="button"
-              aria-label={copy.previousWeek}
-              disabled={!hasPrevious}
-              onClick={() => void goToWeek(addDays(week, -7))}
-              className="flex size-9 items-center justify-center rounded-lg transition-colors outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-30"
-            >
-              <ChevronLeft className="size-5" aria-hidden="true" />
-            </button>
-            <p key={week} className="min-w-32 text-center text-sm font-medium animate-in fade-in-0 duration-300 sm:text-base">
-              {formatShort(week)} – {formatShort(addDays(week, 6))}
-            </p>
-            <button
-              type="button"
-              aria-label={copy.nextWeek}
-              disabled={!hasNext}
-              onClick={() => void goToWeek(addDays(week, 7))}
-              className="flex size-9 items-center justify-center rounded-lg transition-colors outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-30"
-            >
-              <ChevronRight className="size-5" aria-hidden="true" />
-            </button>
-          </div>
-          {!readOnly && hasPrevious && mine.size === 0 && (
-            <button
-              type="button"
-              onClick={() => void copyPreviousWeek()}
-              className="ml-auto flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-xs font-medium transition-colors outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring"
-            >
-              <Copy className="size-3.5" aria-hidden="true" />
-              {copy.copyPrevious}
-            </button>
-          )}
-          <p aria-live="polite" className="flex items-center gap-1.5 text-xs text-muted-foreground">
-            {saveState === "saving" && (
-              <>
-                <LoaderCircle className="size-3.5 animate-spin" aria-hidden="true" />
-                {copy.saving}
-              </>
-            )}
-            {saveState === "saved" && (
-              <span className="flex items-center gap-1.5 animate-in fade-in-0 duration-300">
-                <Check className="size-3.5 text-primary" aria-hidden="true" />
-                {copy.saved}
-              </span>
-            )}
-            {saveState === "error" && (
-              <span className="flex items-center gap-1.5 text-destructive">
-                <CloudOff className="size-3.5" aria-hidden="true" />
-                {copy.saveFailed}
-              </span>
-            )}
-          </p>
-        </div>
+    <div className="flex flex-col gap-4">
+      <MatchBanner
+        state={matchState}
+        options={options}
+        people={liveMembers}
+        slotMinutes={slotMinutes}
+        onFocusTime={setFocusedTime}
+      />
 
-        {readOnly ? (
-          <p className="rounded-lg bg-muted p-3 text-sm">{copy.readOnly}</p>
-        ) : (
-          <p className="text-sm text-muted-foreground">{copy.hint}</p>
-        )}
+      {readOnly ? (
+        <p className="rounded-lg bg-muted p-3 text-sm">{copy.readOnly}</p>
+      ) : (
+        <QuickBar
+          canCopy={hasPrevious && mine.size === 0}
+          canUndo={undoStack.length > 0}
+          canClear={mine.size > 0}
+          onApply={applyQuickInput}
+          onCopyPrevious={() => void copyPreviousWeek()}
+          onUndo={undo}
+          onClear={() => paint([...mine], false, mine)}
+        />
+      )}
 
-        <div className={cn("transition-opacity duration-200", isLoading && "opacity-50")}>
-          {!hasEarlyHours && (
-            <button
-              type="button"
-              onClick={() => setShowEarly((value) => !value)}
-              className="mb-1.5 flex items-center gap-1 text-xs text-muted-foreground transition-colors outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
-            >
-              {showEarly ? <ChevronDown className="size-3.5" aria-hidden="true" /> : <ChevronUp className="size-3.5" aria-hidden="true" />}
-              {showEarly ? copy.hideEarly : copy.showEarly}
-            </button>
-          )}
-          <BoardGrid
-            dates={dates}
-            plannedDates={plannedDates}
-            times={times}
-            today={today}
-            slotMinutes={slotMinutes}
-            total={members.length}
-            counts={counts}
-            backgrounds={backgrounds}
-            mine={mine}
-            myColor={memberColor(Math.max(0, members.findIndex(({ id }) => id === memberId)))}
-            matches={matches}
-            isFullMatch={matchState.kind === "everyone"}
-            highlight={highlight}
-            readOnly={readOnly || isLoading}
-            onPaint={paint}
-            onInspect={setInspected}
-          />
-        </div>
-
-        <p className="text-xs text-muted-foreground">
-          {copy.timeZone} {timeZone}
-        </p>
-      </div>
-
-      <aside className="flex flex-col gap-4 lg:sticky lg:top-4">
-        <section className="min-h-28 rounded-2xl border bg-card p-4 shadow-xs">
-          {inspected ? (
-            <div className="animate-in fade-in-0 duration-150">
-              <p className="text-sm font-medium">
-                {messages.weekdays[dates.indexOf(inspected.split("T")[0])]} {formatShort(inspected.split("T")[0])}, {inspected.split("T")[1]}
-                <span className="ml-1.5 font-normal text-muted-foreground">
-                  {inspectedMembers.length} {copy.outOf} {members.length}
-                </span>
+      <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_15rem]">
+        <div className="flex min-w-0 flex-col gap-2">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                aria-label={copy.previousWeek}
+                disabled={!hasPrevious}
+                onClick={() => void goToWeek(addDays(week, -7))}
+                className="flex size-8 items-center justify-center rounded-lg transition-colors outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-30"
+              >
+                <ChevronLeft className="size-4" aria-hidden="true" />
+              </button>
+              <p key={week} className="min-w-28 text-center text-sm font-medium animate-in fade-in-0 duration-300">
+                {formatShort(week)} – {formatShort(addDays(week, 6))}
               </p>
-              {inspectedMembers.length === 0 ? (
-                <p className="mt-2 text-sm text-muted-foreground">{copy.nobody}</p>
-              ) : (
-                <p className="mt-2 text-sm wrap-break-word">
-                  <span className="text-muted-foreground">{copy.canAttend}: </span>
-                  {inspectedMembers.map(({ id }) => nameOf(id)).join(", ")}
-                </p>
-              )}
-              {inspectedOthers.length > 0 && inspectedMembers.length > 0 && (
-                <p className="mt-1 text-sm wrap-break-word">
-                  <span className="text-muted-foreground">{copy.unavailable}: </span>
-                  {inspectedOthers.map(({ id }) => nameOf(id)).join(", ")}
-                </p>
+              <button
+                type="button"
+                aria-label={copy.nextWeek}
+                disabled={!hasNext}
+                onClick={() => void goToWeek(addDays(week, 7))}
+                className="flex size-8 items-center justify-center rounded-lg transition-colors outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-30"
+              >
+                <ChevronRight className="size-4" aria-hidden="true" />
+              </button>
+              {!hasEarlyHours && (
+                <button
+                  type="button"
+                  onClick={() => setShowEarly((value) => !value)}
+                  className="ml-1 flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-muted-foreground transition-colors outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  {showEarly ? <ChevronDown className="size-3.5" aria-hidden="true" /> : <ChevronUp className="size-3.5" aria-hidden="true" />}
+                  {showEarly ? copy.hideEarly : copy.showEarly}
+                </button>
               )}
             </div>
-          ) : (
-            <>
-              <h2 className="text-sm font-medium">{copy.people}</h2>
-              <ul className="mt-2 flex flex-col gap-0.5">
-                {liveMembers.map(({ id, name, cells }, index) => (
+            <p aria-live="polite" className="flex min-h-5 items-center gap-1.5 text-xs text-muted-foreground">
+              {saveState === "saving" && (
+                <>
+                  <LoaderCircle className="size-3.5 animate-spin" aria-hidden="true" />
+                  {copy.saving}
+                </>
+              )}
+              {saveState === "saved" && (
+                <span className="flex items-center gap-1.5 animate-in fade-in-0 duration-300">
+                  <Check className="size-3.5 text-primary" aria-hidden="true" />
+                  {copy.saved}
+                </span>
+              )}
+              {saveState === "error" && (
+                <span className="flex items-center gap-1.5 text-destructive">
+                  <CloudOff className="size-3.5" aria-hidden="true" />
+                  {copy.saveFailed}
+                </span>
+              )}
+            </p>
+          </div>
+
+          <div className={cn("transition-opacity duration-200", isLoading && "opacity-50")}>
+            <BoardGrid
+              key={week}
+              dates={dates}
+              plannedDates={plannedDates}
+              times={times}
+              today={today}
+              people={gridPeople}
+              counts={counts}
+              mine={mine}
+              matches={matches}
+              isFullMatch={matchState.kind === "everyone"}
+              highlight={highlight}
+              highlightedPerson={personHighlight}
+              readOnly={readOnly || isLoading}
+              onPaint={paint}
+              onInspect={setInspected}
+            />
+          </div>
+
+          <div className="flex flex-wrap justify-between gap-x-4 gap-y-1 text-xs text-muted-foreground">
+            {!readOnly && <p>{copy.hint}</p>}
+            <p>
+              {copy.timeZone} {timeZone}
+            </p>
+          </div>
+        </div>
+
+        <aside className="flex flex-col gap-3 lg:sticky lg:top-4 lg:pt-10">
+          <section className="rounded-2xl border bg-card p-3 shadow-xs">
+            <h2 className="px-1 text-xs font-medium text-muted-foreground">{copy.people}</h2>
+            <ul className="mt-1.5 flex flex-col gap-0.5">
+              {liveMembers.map(({ id, name, cells }, index) => {
+                const isAvailableNow = inspected !== null && cells.includes(inspected);
+
+                return (
                   <li key={id}>
                     <button
                       type="button"
@@ -410,13 +411,16 @@ export function ProjectBoard({
                       onFocus={() => setPersonHighlight(id)}
                       onBlur={() => setPersonHighlight(null)}
                       onClick={() => setPersonHighlight((current) => (current === id ? null : id))}
-                      className="flex w-full items-center gap-2 rounded-lg p-1 text-left text-sm transition-colors outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring"
+                      className={cn(
+                        "flex w-full items-center gap-2 rounded-lg p-1 text-left text-sm transition-[background-color,opacity] duration-150 outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring",
+                        inspected !== null && !isAvailableNow && "opacity-35",
+                      )}
                     >
                       <span
                         aria-hidden="true"
                         style={{ backgroundColor: memberColor(index) }}
                         className={cn(
-                          "flex size-6 shrink-0 items-center justify-center rounded-full text-xs font-medium text-white transition-opacity duration-300",
+                          "flex size-6 shrink-0 items-center justify-center rounded-full text-[0.6875rem] font-semibold text-white transition-opacity duration-300",
                           cells.length === 0 && "opacity-35",
                         )}
                       >
@@ -426,46 +430,33 @@ export function ProjectBoard({
                       {cells.length === 0 && <span className="sr-only">{copy.noTimes}</span>}
                     </button>
                   </li>
-                ))}
-              </ul>
-            </>
-          )}
-        </section>
-
-        {best.length > 0 && (
-        <section className="rounded-2xl border bg-card p-4 shadow-xs">
-          <h2 className="text-sm font-medium">{copy.best}</h2>
-            <ol className="mt-2 flex flex-col gap-1">
-              {best.map((time, index) => {
-                const { day, hours } = describeBest(time);
-                const isEveryone = time.participantIds.length === members.length && members.length > 1;
-
-                return (
-                  <li key={`${time.startKey}-${time.participantIds.join()}`} className="animate-in fade-in-0 slide-in-from-bottom-1 duration-300">
-                    <button
-                      type="button"
-                      onMouseEnter={() => setBestHighlight(index)}
-                      onMouseLeave={() => setBestHighlight(null)}
-                      onFocus={() => setBestHighlight(index)}
-                      onBlur={() => setBestHighlight(null)}
-                      onClick={() => setBestHighlight((current) => (current === index ? null : index))}
-                      className="w-full rounded-lg p-2 text-left transition-colors outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring"
-                    >
-                      <span className="flex items-baseline justify-between gap-2 text-sm">
-                        <span className="font-medium">{day}</span>
-                        <span className="shrink-0 text-muted-foreground tabular-nums">{hours}</span>
-                      </span>
-                      <span className="mt-0.5 block truncate text-xs text-muted-foreground">
-                        {isEveryone ? copy.everyone : time.participantIds.map(nameOf).join(", ")}
-                      </span>
-                    </button>
-                  </li>
                 );
               })}
-            </ol>
-        </section>
-        )}
-      </aside>
+            </ul>
+          </section>
+
+          <section className="min-h-16 rounded-2xl border bg-card p-3 text-sm shadow-xs" aria-live="off">
+            {inspected ? (
+              <>
+                <p className="font-medium tabular-nums">
+                  {messages.weekdays[dates.indexOf(inspected.split("T")[0])]} {formatShort(inspected.split("T")[0])}, {inspected.split("T")[1]}
+                </p>
+                <p className="mt-1 text-muted-foreground wrap-break-word">
+                  {inspectedMembers.length === 0
+                    ? copy.nobody
+                    : `${inspectedMembers.length} ${copy.outOf} ${members.length}: ${inspectedMembers.map(({ id }) => nameOf(id)).join(", ")}`}
+                </p>
+                {inspectedOthers.length > 0 && inspectedMembers.length > 0 && (
+                  <p className="mt-0.5 text-xs text-muted-foreground wrap-break-word">
+                    {copy.unavailable}: {inspectedOthers.map(({ id }) => nameOf(id)).join(", ")}
+                  </p>
+                )}
+              </>
+            ) : (
+              <p className="text-muted-foreground">{copy.inspectHint}</p>
+            )}
+          </section>
+        </aside>
       </div>
     </div>
   );

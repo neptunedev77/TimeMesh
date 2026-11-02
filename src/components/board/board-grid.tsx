@@ -1,35 +1,35 @@
 "use client";
 
-import { memo, useEffect, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { locale, messages } from "@/i18n";
 import type { BestTime } from "@/lib/availability/board";
-import { cellKey, rangeKeys } from "@/lib/availability/grid";
+import { cellKey } from "@/lib/availability/grid";
+import { isoWeekday } from "@/lib/availability/timezone";
 import { cn } from "@/lib/utils";
 
 const copy = messages.board;
 const dateLabel = new Intl.DateTimeFormat(locale, { day: "numeric", timeZone: "UTC" });
-const COLUMNS = "grid grid-cols-[2.75rem_repeat(7,minmax(0,1fr))]";
+const COLUMN_PADDING = 3;
+const LANE_GAP = 2;
 
-const PERIODS = [
-  { label: copy.periods.morning, start: "09:00", end: "13:00" },
-  { label: copy.periods.afternoon, start: "13:00", end: "19:00" },
-  { label: copy.periods.evening, start: "19:00", end: "00:00" },
-];
+export type GridPerson = {
+  id: string;
+  color: string;
+  cells: readonly string[];
+};
 
 type GridProps = {
   dates: string[];
   plannedDates: readonly string[];
   times: string[];
   today: string;
-  slotMinutes: number;
-  total: number;
+  people: GridPerson[];
   counts: ReadonlyMap<string, number>;
-  backgrounds: ReadonlyMap<string, string>;
   mine: ReadonlySet<string>;
-  myColor: string;
   matches: BestTime[];
   isFullMatch: boolean;
   highlight: ReadonlySet<string> | null;
+  highlightedPerson: string | null;
   readOnly: boolean;
   onPaint: (keys: string[], add: boolean, base: ReadonlySet<string>) => void;
   onInspect: (key: string | null) => void;
@@ -40,11 +40,12 @@ type CellProps = {
   column: number;
   row: number;
   label: string;
-  background: string | undefined;
   isMine: boolean;
-  isDimmed: boolean;
+  isAnchor: boolean;
   isFocusable: boolean;
   isHourStart: boolean;
+  isWeekend: boolean;
+  isToday: boolean;
   disabled: boolean;
 };
 
@@ -53,11 +54,12 @@ const Cell = memo(function Cell({
   column,
   row,
   label,
-  background,
   isMine,
-  isDimmed,
+  isAnchor,
   isFocusable,
   isHourStart,
+  isWeekend,
+  isToday,
   disabled,
 }: CellProps) {
   return (
@@ -70,19 +72,45 @@ const Cell = memo(function Cell({
       tabIndex={isFocusable ? 0 : -1}
       aria-label={label}
       aria-pressed={isMine}
-      style={{ backgroundImage: background }}
       className={cn(
-        "relative block h-7 w-full touch-none border-l bg-card transition-opacity duration-200 ease-out outline-none focus-visible:z-10 focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed sm:h-6",
-        isHourStart && "border-t",
-        !disabled && "hover:brightness-90",
-        isDimmed && "opacity-25",
+        "relative block h-7 w-full touch-none border-l border-border/60 transition-colors duration-100 outline-none focus-visible:z-30 focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed sm:h-6",
+        isHourStart ? "border-t border-t-border/70" : "border-t border-t-border/20",
+        isWeekend && "bg-muted/40",
+        isToday && "bg-primary/[0.04]",
+        disabled ? "bg-muted/70" : "hover:bg-foreground/[0.06]",
+        isAnchor && "ring-2 ring-foreground/40 ring-inset",
       )}
     />
   );
 });
 
+/** Groups one person's cells into a continuous bar per day. */
+function personBars(person: GridPerson, dates: string[], times: string[]) {
+  const owned = new Set(person.cells);
+  const bars: { column: number; first: number; span: number; keys: string[] }[] = [];
+
+  dates.forEach((date, column) => {
+    let current: (typeof bars)[number] | null = null;
+
+    times.forEach((time, row) => {
+      const key = cellKey(date, time);
+      if (!owned.has(key)) {
+        current = null;
+      } else if (current) {
+        current.span += 1;
+        current.keys.push(key);
+      } else {
+        current = { column, first: row, span: 1, keys: [key] };
+        bars.push(current);
+      }
+    });
+  });
+
+  return bars;
+}
+
 /** Splits a period into one rectangle per day, as positions on the visible grid. */
-function matchRectangles(match: BestTime, dates: string[], times: string[], slotMinutes: number) {
+function matchRectangles(match: BestTime, dates: string[], times: string[]) {
   const byColumn = new Map<number, number[]>();
 
   for (const key of match.keys) {
@@ -92,19 +120,11 @@ function matchRectangles(match: BestTime, dates: string[], times: string[], slot
     if (column >= 0 && row >= 0) byColumn.set(column, [...(byColumn.get(column) ?? []), row]);
   }
 
-  return [...byColumn].map(([column, rows]) => {
-    const first = Math.min(...rows);
-    const last = Math.max(...rows);
-    const span = last - first + 1;
-
-    return {
-      column,
-      first,
-      span,
-      label: `${times[first]}–${times[last + 1] ?? "00:00"}`,
-      isTall: (span * slotMinutes) / 30 >= 2,
-    };
-  });
+  return [...byColumn].map(([column, rows]) => ({
+    column,
+    first: Math.min(...rows),
+    span: Math.max(...rows) - Math.min(...rows) + 1,
+  }));
 }
 
 export function BoardGrid({
@@ -112,25 +132,28 @@ export function BoardGrid({
   plannedDates,
   times,
   today,
-  slotMinutes,
-  total,
+  people,
   counts,
-  backgrounds,
   mine,
-  myColor,
   matches,
   isFullMatch,
   highlight,
+  highlightedPerson,
   readOnly,
   onPaint,
   onInspect,
 }: GridProps) {
   const drag = useRef<{ column: number; row: number; add: boolean; base: ReadonlySet<string> } | null>(null);
   const handledByPointer = useRef(false);
+  const [anchor, setAnchor] = useState<string | null>(null);
   const [focusable, setFocusable] = useState({
     column: Math.max(0, dates.findIndex((date) => plannedDates.includes(date))),
     row: 0,
   });
+  const lanes = useMemo(
+    () => people.map((person, lane) => ({ ...person, lane, bars: personBars(person, dates, times) })),
+    [people, dates, times],
+  );
 
   useEffect(() => {
     const stop = () => {
@@ -164,76 +187,57 @@ export function BoardGrid({
     return keys;
   }
 
-  const isAllMine = (keys: string[]) => keys.length > 0 && keys.every((key) => mine.has(key));
-  const toggleAll = (keys: string[]) => onPaint(keys, !isAllMine(keys), mine);
-  const periodKeys = (date: string, period: (typeof PERIODS)[number]) =>
-    rangeKeys(date, period.start, period.end, slotMinutes);
+  /** Fills from the anchor to this cell, giving the whole range the anchor's state. */
+  function extendFromAnchor(column: number, row: number) {
+    if (!anchor) return false;
+
+    const [date, time] = anchor.split("T");
+    const anchorColumn = dates.indexOf(date);
+    const anchorRow = times.indexOf(time);
+    if (anchorColumn < 0 || anchorRow < 0) return false;
+
+    onPaint(rectangle(anchorColumn, anchorRow, column, row), mine.has(anchor), mine);
+    return true;
+  }
+
+  const toggleAll = (keys: string[]) => onPaint(keys, !(keys.length > 0 && keys.every((key) => mine.has(key))), mine);
+  const percent = (value: number, total: number) => `${(value / total) * 100}%`;
 
   return (
-    <div className="overflow-hidden rounded-2xl border bg-card shadow-xs">
-      <div className={cn(COLUMNS, "border-b bg-muted/40")}>
+    <div className="overflow-clip rounded-2xl border bg-card shadow-xs">
+      <div className="sticky top-0 z-40 grid grid-cols-[2.75rem_repeat(7,minmax(0,1fr))] border-b bg-card/95 backdrop-blur-sm">
         <span />
-        {dates.map((date, column) => (
-          <button
-            key={date}
-            type="button"
-            disabled={!plannedDates.includes(date) || readOnly}
-            aria-label={`${copy.fillDay} ${messages.weekdays[column]}`}
-            onClick={() => toggleAll(times.filter((time) => time >= "09:00").map((time) => cellKey(date, time)))}
-            className={cn(
-              "flex flex-col items-center gap-0.5 border-l py-2 text-xs font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring enabled:hover:bg-muted",
-              !plannedDates.includes(date) && "opacity-40",
-            )}
-          >
-            <span className="text-muted-foreground">{messages.weekdays[column]}</span>
-            <span
+        {dates.map((date, column) => {
+          const isToday = date === today;
+
+          return (
+            <button
+              key={date}
+              type="button"
+              disabled={!plannedDates.includes(date) || readOnly}
+              aria-label={`${copy.fillDay} ${messages.weekdays[column]}`}
+              title={copy.fillDay}
+              onClick={() => toggleAll(times.filter((time) => time >= "09:00").map((time) => cellKey(date, time)))}
               className={cn(
-                "flex size-7 items-center justify-center rounded-full text-sm",
-                date === today && "bg-primary text-primary-foreground",
+                "group flex flex-col items-center gap-0.5 py-2 transition-colors outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring enabled:hover:bg-muted/60",
+                !plannedDates.includes(date) && "opacity-40",
               )}
             >
-              {dateLabel.format(new Date(`${date}T00:00:00Z`))}
-            </span>
-          </button>
-        ))}
-      </div>
-
-      {!readOnly &&
-        PERIODS.map((period) => (
-          <div key={period.label} className={cn(COLUMNS, "border-b")}>
-            <button
-              type="button"
-              aria-label={`${copy.fillPeriod} ${period.label}`}
-              onClick={() => toggleAll(plannedDates.flatMap((date) => periodKeys(date, period)))}
-              className="truncate px-0.5 text-center text-[0.625rem] font-medium text-muted-foreground transition-colors outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring"
-            >
-              {period.label}
+              <span className="text-[0.625rem] font-semibold tracking-wider text-muted-foreground uppercase">
+                {messages.weekdays[column]}
+              </span>
+              <span
+                className={cn(
+                  "flex size-7 items-center justify-center rounded-full text-sm font-medium tabular-nums",
+                  isToday && "bg-primary text-primary-foreground",
+                )}
+              >
+                {dateLabel.format(new Date(`${date}T00:00:00Z`))}
+              </span>
             </button>
-            {dates.map((date, column) => {
-              const keys = periodKeys(date, period);
-              const planned = plannedDates.includes(date);
-              const on = isAllMine(keys);
-              const partial = !on && keys.some((key) => mine.has(key));
-
-              return (
-                <div key={date} className="border-l p-0.5">
-                  <button
-                    type="button"
-                    disabled={!planned}
-                    aria-pressed={on}
-                    aria-label={`${messages.weekdays[column]}, ${period.label}`}
-                    onClick={() => toggleAll(keys)}
-                    style={on ? { backgroundColor: myColor } : partial ? { backgroundColor: `${myColor}40` } : undefined}
-                    className={cn(
-                      "block h-8 w-full rounded-md bg-muted/60 transition-[background-color,transform] duration-150 outline-none active:scale-95 focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-30 sm:h-7",
-                      planned && !on && "hover:bg-muted",
-                    )}
-                  />
-                </div>
-              );
-            })}
-          </div>
-        ))}
+          );
+        })}
+      </div>
 
       <div className="flex">
         {/* The only part of the grid that scrolls by touch, since cells paint when dragged. */}
@@ -244,14 +248,12 @@ export function BoardGrid({
               type="button"
               disabled={readOnly}
               tabIndex={time.endsWith(":00") ? 0 : -1}
-              aria-label={`${copy.fillPeriod} ${time}`}
+              aria-label={`${copy.fillTime} ${time}`}
+              title={copy.fillTime}
               onClick={() => toggleAll(plannedDates.map((date) => cellKey(date, time)))}
-              className={cn(
-                "block h-7 w-full touch-pan-y pr-1.5 text-right text-[0.6875rem] leading-none text-muted-foreground transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring enabled:hover:bg-muted sm:h-6",
-                time.endsWith(":00") && "border-t",
-              )}
+              className="block h-7 w-full touch-pan-y pr-2 text-right text-[0.6875rem] leading-none text-muted-foreground tabular-nums transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring enabled:hover:text-foreground sm:h-6"
             >
-              {time.endsWith(":00") ? time : ""}
+              <span className="relative -top-1.5">{time.endsWith(":00") ? time : ""}</span>
             </button>
           ))}
         </div>
@@ -269,6 +271,10 @@ export function BoardGrid({
               setFocusable({ column: cell.column, row: cell.row });
               onInspect(cell.key);
               handledByPointer.current = true;
+
+              if (event.shiftKey && extendFromAnchor(cell.column, cell.row)) return;
+
+              setAnchor(cell.key);
               const add = !mine.has(cell.key);
               drag.current = { column: cell.column, row: cell.row, add, base: mine };
               onPaint([cell.key], add, mine);
@@ -293,7 +299,9 @@ export function BoardGrid({
                 return;
               }
               const cell = cellFrom(event.target);
-              if (cell) onPaint([cell.key], !mine.has(cell.key), mine);
+              if (!cell) return;
+              setAnchor(cell.key);
+              onPaint([cell.key], !mine.has(cell.key), mine);
             }}
             onKeyDown={(event) => {
               const cell = cellFrom(event.target);
@@ -303,60 +311,85 @@ export function BoardGrid({
               event.preventDefault();
               const column = Math.min(6, Math.max(0, cell.column + move[0]));
               const row = Math.min(times.length - 1, Math.max(0, cell.row + move[1]));
+              if (event.shiftKey) extendFromAnchor(column, row);
+              setFocusable({ column, row });
               document.getElementById(`cell-${column}-${row}`)?.focus();
             }}
           >
-            {dates.map((date, column) => (
-              <div key={date} role="row" className="min-w-0">
-                {times.map((time, row) => {
-                  const key = cellKey(date, time);
-                  const planned = plannedDates.includes(date);
-                  const isMine = mine.has(key);
+            {dates.map((date, column) => {
+              const planned = plannedDates.includes(date);
+              const weekday = isoWeekday(date);
 
-                  return (
-                    <Cell
-                      key={key}
-                      id={`cell-${column}-${row}`}
-                      column={column}
-                      row={row}
-                      label={`${messages.weekdays[column]} ${dateLabel.format(new Date(`${date}T00:00:00Z`))}, ${time}, ${counts.get(key) ?? 0} ${copy.outOf} ${total} ${copy.available}${isMine ? `, ${copy.you}` : ""}`}
-                      background={planned ? backgrounds.get(key) : undefined}
-                      isMine={isMine}
-                      isDimmed={!planned || (highlight !== null && !highlight.has(key))}
-                      isFocusable={column === focusable.column && row === focusable.row}
-                      isHourStart={time.endsWith(":00")}
-                      disabled={!planned || readOnly}
-                    />
-                  );
-                })}
-              </div>
-            ))}
+              return (
+                <div key={date} role="row" className="min-w-0">
+                  {times.map((time, row) => {
+                    const key = cellKey(date, time);
+                    const isMine = mine.has(key);
+
+                    return (
+                      <Cell
+                        key={key}
+                        id={`cell-${column}-${row}`}
+                        column={column}
+                        row={row}
+                        label={`${messages.weekdays[column]} ${dateLabel.format(new Date(`${date}T00:00:00Z`))}, ${time}, ${counts.get(key) ?? 0} ${copy.outOf} ${people.length} ${copy.available}${isMine ? `, ${copy.you}` : ""}`}
+                        isMine={isMine}
+                        isAnchor={anchor === key && !readOnly}
+                        isFocusable={column === focusable.column && row === focusable.row}
+                        isHourStart={time.endsWith(":00")}
+                        isWeekend={weekday >= 6}
+                        isToday={date === today}
+                        disabled={!planned || readOnly}
+                      />
+                    );
+                  })}
+                </div>
+              );
+            })}
           </div>
 
-          <div className="pointer-events-none absolute inset-0" aria-hidden="true">
+          <div className="pointer-events-none absolute inset-0 overflow-hidden" aria-hidden="true">
+            {lanes.flatMap(({ id, color, lane, bars }) =>
+              bars.map(({ column, first, span, keys }) => {
+                const isDimmed =
+                  (highlightedPerson !== null && highlightedPerson !== id) ||
+                  (highlight !== null && !keys.some((key) => highlight.has(key)));
+                const dayWidth = `(100% / 7 - ${COLUMN_PADDING * 2}px)`;
+
+                return (
+                  <span
+                    key={`${id}-${column}-${first}`}
+                    style={{
+                      backgroundColor: color,
+                      left: `calc(${percent(column, 7)} + ${COLUMN_PADDING}px + ${dayWidth} * ${lane} / ${people.length})`,
+                      width: `calc(${dayWidth} / ${people.length} - ${people.length > 1 ? LANE_GAP : 0}px)`,
+                      top: `calc(${percent(first, times.length)} + 1px)`,
+                      height: `calc(${percent(span, times.length)} - 2px)`,
+                    }}
+                    className={cn(
+                      "absolute z-10 rounded-[5px] shadow-[inset_0_1px_0_rgb(255_255_255/0.25)] transition-[height,top,opacity] duration-150 ease-out",
+                      isDimmed && "opacity-15",
+                    )}
+                  />
+                );
+              }),
+            )}
+
             {matches.flatMap((match) =>
-              matchRectangles(match, dates, times, slotMinutes).map(({ column, first, span, label, isTall }) => (
-                <div
-                  key={`${match.startKey}-${column}-${first}-${span}`}
+              matchRectangles(match, dates, times).map(({ column, first, span }) => (
+                <span
+                  key={`${match.startKey}-${match.participantIds.join()}-${column}-${first}-${span}`}
                   style={{
-                    left: `${(column / 7) * 100}%`,
-                    width: `${100 / 7}%`,
-                    top: `${(first / times.length) * 100}%`,
-                    height: `${(span / times.length) * 100}%`,
+                    left: `calc(${percent(column, 7)} + 1px)`,
+                    width: "calc(100% / 7 - 2px)",
+                    top: percent(first, times.length),
+                    height: percent(span, times.length),
                   }}
                   className={cn(
-                    "absolute z-10 flex items-center justify-center rounded-lg p-0.5 duration-500 animate-in fade-in-0 zoom-in-90 motion-reduce:animate-none",
-                    isFullMatch
-                      ? "shadow-[0_0_0_3px_var(--foreground),0_0_18px_4px_rgb(16_185_129/0.7)]"
-                      : "shadow-[0_0_0_2px_var(--foreground)]",
+                    "absolute z-20 rounded-lg border-2 duration-300 animate-in fade-in-0 zoom-in-95 motion-reduce:animate-none",
+                    isFullMatch ? "border-foreground" : "border-dashed border-foreground/60",
                   )}
-                >
-                  {isTall && (
-                    <span className="rounded-md bg-foreground px-1 py-0.5 text-center text-[0.625rem] leading-tight font-semibold text-background tabular-nums sm:px-1.5 sm:text-xs">
-                      {label}
-                    </span>
-                  )}
-                </div>
+                />
               )),
             )}
           </div>
