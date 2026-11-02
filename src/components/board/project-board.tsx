@@ -1,9 +1,17 @@
 "use client";
 
-import { Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, CloudOff, LoaderCircle } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, CloudOff, Eye, EyeOff, LoaderCircle } from "lucide-react";
+import { type PointerEvent as ReactPointerEvent, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { locale, messages } from "@/i18n";
-import { type BestTime, bestTimes, type BoardMember, findMatches, memberColor } from "@/lib/availability/board";
+import {
+  type BestTime,
+  bestTimes,
+  type BoardMember,
+  currentCellKey,
+  findMatches,
+  memberColor,
+  visibleTimes,
+} from "@/lib/availability/board";
 import { slotTimes, weekDates } from "@/lib/availability/grid";
 import { parseQuickInput, quickSelectionKeys } from "@/lib/availability/quick-input";
 import { addDays } from "@/lib/availability/timezone";
@@ -15,8 +23,19 @@ import { QuickBar } from "./quick-bar";
 const copy = messages.board;
 const SAVE_DELAY = 500;
 const REFRESH_INTERVAL = 5000;
-const DAY_START = "07:00";
 const UNDO_LIMIT = 30;
+const NOW_INTERVAL = 60_000;
+const SWIPE_DISTANCE = 40;
+const PHONE_QUERY = "(max-width: 639px)";
+
+function subscribeToPhone(onChange: () => void) {
+  const query = window.matchMedia(PHONE_QUERY);
+  query.addEventListener("change", onChange);
+  return () => query.removeEventListener("change", onChange);
+}
+
+const useIsPhone = () =>
+  useSyncExternalStore(subscribeToPhone, () => window.matchMedia(PHONE_QUERY).matches, () => false);
 
 const shortDate = new Intl.DateTimeFormat(locale, { day: "numeric", month: "short", timeZone: "UTC" });
 const formatShort = (date: string) => shortDate.format(new Date(`${date}T00:00:00Z`));
@@ -71,7 +90,16 @@ export function ProjectBoard({
   const [inspected, setInspected] = useState<string | null>(null);
   const [personHighlight, setPersonHighlight] = useState<string | null>(null);
   const [focusedTime, setFocusedTime] = useState<BestTime | null>(null);
-  const [showEarly, setShowEarly] = useState(false);
+  const [showAllHours, setShowAllHours] = useState(false);
+  const [onlyMine, setOnlyMine] = useState(false);
+  const [hiddenPeople, setHiddenPeople] = useState<ReadonlySet<string>>(new Set());
+  const [now, setNow] = useState<Date | null>(null);
+  const [slideFrom, setSlideFrom] = useState<"left" | "right" | null>(null);
+  const [phoneDay, setPhoneDay] = useState<string | null>(null);
+  const [phoneWeekView, setPhoneWeekView] = useState(false);
+  const [settledMine, setSettledMine] = useState(mine);
+  const [pointerReleases, setPointerReleases] = useState(0);
+  const isPhone = useIsPhone();
   const [undoStack, setUndoStack] = useState<ReadonlySet<string>[]>([]);
 
   // What still has to reach the server, kept outside React state so saves never overlap.
@@ -81,6 +109,46 @@ export function ProjectBoard({
   const retry = useRef<() => Promise<void>>(async () => {});
   const weekRef = useRef(week);
   const cache = useRef(new Map<string, BoardMember[]>([[initialWeek, initialMembers]]));
+  const isPointerDown = useRef(false);
+  const swipeStart = useRef<number | null>(null);
+
+  const nowKey = useMemo(() => (now ? currentCellKey(now, timeZone, slotMinutes) : null), [now, timeZone, slotMinutes]);
+
+  useEffect(() => {
+    const tick = () => setNow(new Date());
+    const first = setTimeout(tick, 0);
+    const interval = setInterval(tick, NOW_INTERVAL);
+    return () => {
+      clearTimeout(first);
+      clearInterval(interval);
+    };
+  }, []);
+
+  // The visible hours only change once a gesture ends, so rows never move under the pointer.
+  useEffect(() => {
+    const down = () => {
+      isPointerDown.current = true;
+    };
+    const up = () => {
+      isPointerDown.current = false;
+      setPointerReleases((count) => count + 1);
+    };
+    window.addEventListener("pointerdown", down);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
+    return () => {
+      window.removeEventListener("pointerdown", down);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", up);
+    };
+  }, []);
+
+  useEffect(() => {
+    const timeout = setTimeout(() => {
+      if (!isPointerDown.current) setSettledMine(mine);
+    }, 400);
+    return () => clearTimeout(timeout);
+  }, [mine, pointerReleases]);
 
   const flush = useCallback(async () => {
     if (isSaving.current) return;
@@ -136,12 +204,14 @@ export function ProjectBoard({
   const paint = useCallback(
     (keys: string[], add: boolean, base: ReadonlySet<string>) => {
       const next = new Set(base);
-      keys.forEach((key) => (add ? next.add(key) : next.delete(key)));
+      keys
+        .filter((key) => nowKey === null || key >= nowKey)
+        .forEach((key) => (add ? next.add(key) : next.delete(key)));
       // A drag repaints from the same starting point, which only counts as one step to undo.
       setUndoStack((stack) => (stack.at(-1) === base ? stack : [...stack, base].slice(-UNDO_LIMIT)));
       commit(next);
     },
-    [commit],
+    [commit, nowKey],
   );
 
   const undo = useCallback(() => {
@@ -189,6 +259,8 @@ export function ProjectBoard({
   async function goToWeek(next: string) {
     clearTimeout(timer.current);
     void flush();
+    setSlideFrom(next > week ? "right" : "left");
+    setPhoneDay(null);
     weekRef.current = next;
     setWeek(next);
     setFocusedTime(null);
@@ -250,8 +322,19 @@ export function ProjectBoard({
     [members, memberId, mine],
   );
   const gridPeople = useMemo(
-    () => liveMembers.map(({ id, cells }, index) => ({ id, cells, color: memberColor(index) })),
-    [liveMembers],
+    () =>
+      liveMembers
+        .map(({ id, name, cells }, index) => ({ id, name, cells, color: memberColor(index) }))
+        .filter(({ id }) => (!onlyMine || id === memberId) && !hiddenPeople.has(id)),
+    [liveMembers, onlyMine, memberId, hiddenPeople],
+  );
+  // Times already gone can't be suggested, even if they are still shown on the grid.
+  const upcomingMembers = useMemo(
+    () =>
+      nowKey === null
+        ? liveMembers
+        : liveMembers.map((member) => ({ ...member, cells: member.cells.filter((key) => key >= nowKey) })),
+    [liveMembers, nowKey],
   );
 
   const counts = useMemo(() => {
@@ -260,24 +343,61 @@ export function ProjectBoard({
     return result;
   }, [liveMembers]);
 
-  const allTimes = useMemo(() => bestTimes(liveMembers, week, slotMinutes, 12), [liveMembers, week, slotMinutes]);
-  const matchState = useMemo(() => findMatches(liveMembers, allTimes), [liveMembers, allTimes]);
+  const allTimes = useMemo(() => bestTimes(upcomingMembers, week, slotMinutes, 12), [upcomingMembers, week, slotMinutes]);
+  const matchState = useMemo(() => findMatches(upcomingMembers, allTimes), [upcomingMembers, allTimes]);
   const matches = useMemo(() => ("matches" in matchState ? matchState.matches : []), [matchState]);
   const options = useMemo(
     () =>
       allTimes
         .filter(({ participantIds }) => participantIds.length >= 2)
-        .filter((time) => time !== matches[0])
-        .slice(0, 5),
+        .filter((time) => time !== matches[0]),
     [allTimes, matches],
   );
 
-  const hasEarlyHours = useMemo(() => [...counts.keys()].some((key) => key.split("T")[1] < DAY_START), [counts]);
-  const isEarlyVisible = showEarly || hasEarlyHours;
-  const times = useMemo(
-    () => slotTimes(slotMinutes).filter((time) => isEarlyVisible || time >= DAY_START),
-    [slotMinutes, isEarlyVisible],
-  );
+  const times = useMemo(() => {
+    const all = slotTimes(slotMinutes);
+    if (showAllHours) return all;
+
+    const others = members.filter(({ id }) => id !== memberId).flatMap(({ cells }) => cells);
+    return visibleTimes(all, [...others, ...settledMine], slotMinutes);
+  }, [slotMinutes, showAllHours, members, memberId, settledMine]);
+
+  const selectedDay = phoneDay && dates.includes(phoneDay) ? phoneDay : dates.includes(today) ? today : (plannedDates[0] ?? dates[0]);
+  const isDayView = isPhone && !phoneWeekView;
+  const gridDates = useMemo(() => (isDayView ? [selectedDay] : dates), [isDayView, selectedDay, dates]);
+
+  function togglePerson(id: string) {
+    setHiddenPeople((hidden) => {
+      const next = new Set(hidden);
+      if (!next.delete(id)) next.add(id);
+      return next;
+    });
+  }
+
+  function moveDay(step: number) {
+    const next = dates[dates.indexOf(selectedDay) + step];
+    if (next) {
+      setSlideFrom(step > 0 ? "right" : "left");
+      setPhoneDay(next);
+    }
+  }
+
+  function endSwipe(event: ReactPointerEvent) {
+    if (swipeStart.current === null) return;
+
+    const distance = event.clientX - swipeStart.current;
+    swipeStart.current = null;
+    if (Math.abs(distance) >= SWIPE_DISTANCE) moveDay(distance < 0 ? 1 : -1);
+  }
+
+  const nowMinutes = useMemo(() => {
+    if (!now) return null;
+    const [hours, minutes] = new Intl.DateTimeFormat("en-GB", { timeZone, hour: "2-digit", minute: "2-digit", hourCycle: "h23" })
+      .format(now)
+      .split(":")
+      .map(Number);
+    return hours * 60 + minutes;
+  }, [now, timeZone]);
 
   const highlight = useMemo(() => (focusedTime ? new Set(focusedTime.keys) : null), [focusedTime]);
 
@@ -290,8 +410,9 @@ export function ProjectBoard({
       <MatchBanner
         state={matchState}
         options={options}
-        people={liveMembers}
+        people={upcomingMembers}
         slotMinutes={slotMinutes}
+        nameOf={nameOf}
         onFocusTime={setFocusedTime}
       />
 
@@ -334,16 +455,32 @@ export function ProjectBoard({
               >
                 <ChevronRight className="size-4" aria-hidden="true" />
               </button>
-              {!hasEarlyHours && (
-                <button
-                  type="button"
-                  onClick={() => setShowEarly((value) => !value)}
-                  className="ml-1 flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-muted-foreground transition-colors outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
-                >
-                  {showEarly ? <ChevronDown className="size-3.5" aria-hidden="true" /> : <ChevronUp className="size-3.5" aria-hidden="true" />}
-                  {showEarly ? copy.hideEarly : copy.showEarly}
-                </button>
+              <button
+                type="button"
+                onClick={() => setShowAllHours((value) => !value)}
+                className="ml-1 flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-muted-foreground transition-colors outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                {showAllHours ? <ChevronDown className="size-3.5" aria-hidden="true" /> : <ChevronUp className="size-3.5" aria-hidden="true" />}
+                <span className="max-sm:sr-only">{showAllHours ? copy.fitHours : copy.showAllHours}</span>
+              </button>
+            </div>
+            <div className="flex items-center gap-2">
+              {isPhone && (
+                <Segmented
+                  label={copy.layoutLabel}
+                  options={[
+                    { label: copy.dayView, active: !phoneWeekView, onClick: () => setPhoneWeekView(false) },
+                    { label: copy.weekView, active: phoneWeekView, onClick: () => setPhoneWeekView(true) },
+                  ]}
+                />
               )}
+              <Segmented
+                label={copy.viewLabel}
+                options={[
+                  { label: copy.viewGroup, active: !onlyMine, onClick: () => setOnlyMine(false) },
+                  { label: copy.viewMine, active: onlyMine, onClick: () => setOnlyMine(true) },
+                ]}
+              />
             </div>
             <p aria-live="polite" className="flex min-h-5 items-center gap-1.5 text-xs text-muted-foreground">
               {saveState === "saving" && (
@@ -367,20 +504,65 @@ export function ProjectBoard({
             </p>
           </div>
 
-          <div className={cn("transition-opacity duration-200", isLoading && "opacity-50")}>
+          {isDayView && (
+            <div
+              className="grid touch-pan-y grid-cols-7 gap-1"
+              onPointerDown={(event) => {
+                swipeStart.current = event.clientX;
+              }}
+              onPointerUp={endSwipe}
+              onPointerCancel={() => {
+                swipeStart.current = null;
+              }}
+            >
+              {dates.map((date, index) => {
+                const hasHours = liveMembers.some(({ cells }) => cells.some((key) => key.startsWith(date)));
+
+                return (
+                  <button
+                    key={date}
+                    type="button"
+                    aria-pressed={date === selectedDay}
+                    onClick={() => setPhoneDay(date)}
+                    className={cn(
+                      "flex flex-col items-center gap-0.5 rounded-lg py-1.5 text-xs font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                      date === selectedDay ? "bg-foreground text-background" : "text-muted-foreground",
+                    )}
+                  >
+                    {messages.weekdays[index]}
+                    <span aria-hidden="true" className={cn("size-1 rounded-full", hasHours ? "bg-primary" : "bg-transparent")} />
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
+          <div
+            key={gridDates.join()}
+            className={cn(
+              "transition-opacity duration-200 motion-safe:animate-in motion-safe:fade-in-0 motion-safe:duration-200",
+              isLoading && "opacity-50",
+              slideFrom === "right" && "motion-safe:slide-in-from-right-3",
+              slideFrom === "left" && "motion-safe:slide-in-from-left-3",
+            )}
+          >
             <BoardGrid
-              key={week}
-              dates={dates}
+              dates={gridDates}
               plannedDates={plannedDates}
               times={times}
               today={today}
+              slotMinutes={slotMinutes}
               people={gridPeople}
+              total={members.length}
               counts={counts}
               mine={mine}
-              matches={matches}
+              matches={onlyMine ? [] : matches}
               isFullMatch={matchState.kind === "everyone"}
               highlight={highlight}
-              highlightedPerson={personHighlight}
+              highlightedPerson={personHighlight && !hiddenPeople.has(personHighlight) ? personHighlight : null}
+              inspected={inspected}
+              nowKey={nowKey}
+              nowMinutes={nowMinutes}
               readOnly={readOnly || isLoading}
               onPaint={paint}
               onInspect={setInspected}
@@ -401,9 +583,11 @@ export function ProjectBoard({
             <ul className="mt-1.5 flex flex-col gap-0.5">
               {liveMembers.map(({ id, name, cells }, index) => {
                 const isAvailableNow = inspected !== null && cells.includes(inspected);
+                const isHidden = hiddenPeople.has(id);
+                const displayName = id === memberId ? `${name} (${copy.you.toLowerCase()})` : name;
 
                 return (
-                  <li key={id}>
+                  <li key={id} className="group relative">
                     <button
                       type="button"
                       onMouseEnter={() => setPersonHighlight(id)}
@@ -412,8 +596,8 @@ export function ProjectBoard({
                       onBlur={() => setPersonHighlight(null)}
                       onClick={() => setPersonHighlight((current) => (current === id ? null : id))}
                       className={cn(
-                        "flex w-full items-center gap-2 rounded-lg p-1 text-left text-sm transition-[background-color,opacity] duration-150 outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring",
-                        inspected !== null && !isAvailableNow && "opacity-35",
+                        "flex w-full items-center gap-2 rounded-lg p-1 pr-8 text-left text-sm transition-[background-color,opacity] duration-150 outline-none group-hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring",
+                        ((inspected !== null && !isAvailableNow) || isHidden) && "opacity-35",
                       )}
                     >
                       <span
@@ -426,8 +610,21 @@ export function ProjectBoard({
                       >
                         {initials(name)}
                       </span>
-                      <span className="min-w-0 flex-1 truncate">{id === memberId ? `${name} (${copy.you.toLowerCase()})` : name}</span>
+                      <span className="min-w-0 flex-1 truncate">{displayName}</span>
                       {cells.length === 0 && <span className="sr-only">{copy.noTimes}</span>}
+                    </button>
+                    <button
+                      type="button"
+                      aria-pressed={isHidden}
+                      aria-label={`${isHidden ? copy.showPerson : copy.hidePerson} ${name}`}
+                      title={isHidden ? copy.showPerson : copy.hidePerson}
+                      onClick={() => togglePerson(id)}
+                      className={cn(
+                        "absolute top-1/2 right-1 flex size-6 -translate-y-1/2 items-center justify-center rounded-md text-muted-foreground transition-opacity duration-150 outline-none hover:bg-background hover:text-foreground focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring [@media(hover:none)]:opacity-100",
+                        isHidden ? "opacity-100" : "opacity-0 group-hover:opacity-100",
+                      )}
+                    >
+                      {isHidden ? <EyeOff className="size-3.5" aria-hidden="true" /> : <Eye className="size-3.5" aria-hidden="true" />}
                     </button>
                   </li>
                 );
@@ -458,6 +655,33 @@ export function ProjectBoard({
           </section>
         </aside>
       </div>
+    </div>
+  );
+}
+
+function Segmented({
+  label,
+  options,
+}: {
+  label: string;
+  options: { label: string; active: boolean; onClick: () => void }[];
+}) {
+  return (
+    <div role="group" aria-label={label} className="flex rounded-lg bg-muted p-0.5">
+      {options.map((option) => (
+        <button
+          key={option.label}
+          type="button"
+          aria-pressed={option.active}
+          onClick={option.onClick}
+          className={cn(
+            "rounded-md px-2 py-1 text-xs font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring",
+            option.active ? "bg-card text-foreground shadow-xs" : "text-muted-foreground hover:text-foreground",
+          )}
+        >
+          {option.label}
+        </button>
+      ))}
     </div>
   );
 }

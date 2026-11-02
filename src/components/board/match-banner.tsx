@@ -1,14 +1,18 @@
 "use client";
 
+import { ChevronDown } from "lucide-react";
+import { useState } from "react";
 import { locale, messages } from "@/i18n";
 import { type BestTime, type MatchState, memberColor } from "@/lib/availability/board";
 import { cn } from "@/lib/utils";
 
 const copy = messages.board.banner;
 const { weekdays } = messages;
+const VISIBLE_OPTIONS = 4;
 
 const longDate = new Intl.DateTimeFormat(locale, { weekday: "long", day: "numeric", month: "long", timeZone: "UTC" });
 const dayNumber = new Intl.DateTimeFormat(locale, { day: "numeric", timeZone: "UTC" });
+const nameList = new Intl.ListFormat(locale, { style: "long", type: "conjunction" });
 
 type Person = { id: string; name: string; cells: string[] };
 
@@ -17,6 +21,7 @@ type MatchBannerProps = {
   options: BestTime[];
   people: Person[];
   slotMinutes: number;
+  nameOf: (id: string) => string;
   onFocusTime: (time: BestTime | null) => void;
 };
 
@@ -32,14 +37,13 @@ function formatDuration(minutes: number) {
 
 function Avatars({ ids, people }: { ids: string[]; people: Person[] }) {
   return (
-    <div className="flex -space-x-1.5" aria-hidden="true">
+    <span className="flex shrink-0 -space-x-1.5" aria-hidden="true">
       {ids.map((id) => {
         const index = people.findIndex((person) => person.id === id);
 
         return (
           <span
             key={id}
-            title={people[index]?.name}
             style={{ backgroundColor: memberColor(index) }}
             className="flex size-7 items-center justify-center rounded-full text-[0.6875rem] font-semibold text-white ring-2 ring-card"
           >
@@ -47,12 +51,14 @@ function Avatars({ ids, people }: { ids: string[]; people: Person[] }) {
           </span>
         );
       })}
-    </div>
+    </span>
   );
 }
 
-/** The headline of the board: the best time the group has, shown like a calendar entry. */
-export function MatchBanner({ state, options, people, slotMinutes, onFocusTime }: MatchBannerProps) {
+/** The headline of the board: the time that suits everyone, then the others by how many can attend. */
+export function MatchBanner({ state, options, people, slotMinutes, nameOf, onFocusTime }: MatchBannerProps) {
+  const [showAll, setShowAll] = useState(false);
+  const [showOnPhone, setShowOnPhone] = useState(false);
   const responded = people.filter(({ cells }) => cells.length > 0).length;
 
   if (state.kind === "waiting" || state.kind === "none") {
@@ -84,7 +90,10 @@ export function MatchBanner({ state, options, people, slotMinutes, onFocusTime }
 
   const [best] = state.matches;
   const isEveryone = state.kind === "everyone";
-  const names = best.participantIds.map((id) => people.find((person) => person.id === id)?.name).join(", ");
+  const namesOf = (ids: string[]) => nameList.format(ids.map(nameOf));
+  const missingFrom = (ids: string[]) => people.map(({ id }) => id).filter((id) => !ids.includes(id));
+  const bestMissing = missingFrom(best.participantIds);
+  const visibleOptions = showAll ? options : options.slice(0, VISIBLE_OPTIONS);
 
   return (
     <section className="overflow-hidden rounded-2xl border bg-card shadow-xs">
@@ -95,7 +104,7 @@ export function MatchBanner({ state, options, people, slotMinutes, onFocusTime }
         onMouseLeave={() => onFocusTime(null)}
         onFocus={() => onFocusTime(best)}
         onBlur={() => onFocusTime(null)}
-        className="flex w-full flex-wrap items-center gap-4 p-4 text-left duration-500 outline-none animate-in fade-in-0 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring motion-reduce:animate-none sm:gap-5 sm:p-5"
+        className="flex w-full flex-wrap items-center gap-x-3 gap-y-1.5 p-3 text-left duration-500 outline-none animate-in fade-in-0 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring motion-reduce:animate-none sm:gap-5 sm:p-5"
       >
         <span
           aria-hidden="true"
@@ -120,50 +129,91 @@ export function MatchBanner({ state, options, people, slotMinutes, onFocusTime }
         <span className="min-w-0 flex-1 basis-48">
           <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
             <span aria-hidden="true" className={cn("size-1.5 rounded-full", isEveryone ? "bg-primary" : "bg-muted-foreground")} />
-            {isEveryone
-              ? copy.everyoneTitle
-              : `${best.participantIds.length} ${messages.board.outOf} ${people.length} ${copy.partialTitle}`}
+            {isEveryone ? copy.everyoneTitle : copy.noEveryoneTitle}
           </span>
           <span className="mt-0.5 block text-2xl font-semibold tracking-tight tabular-nums sm:text-3xl">
             {hoursOf(best)}
           </span>
-          <span className="mt-0.5 block text-sm text-muted-foreground first-letter:uppercase">
+          <span className="mt-0.5 block text-sm text-muted-foreground first-letter:uppercase max-sm:hidden">
             {longDate.format(parseDate(best.startKey))} · {formatDuration(best.keys.length * slotMinutes)}
           </span>
         </span>
 
-        <span className="flex flex-col items-end gap-1">
-          <Avatars ids={best.participantIds} people={people} />
-          <span className="sr-only">{names}</span>
-          {!isEveryone && (
-            <span className="max-w-40 truncate text-xs text-muted-foreground">{names}</span>
+        <span className="flex max-w-full flex-col items-start gap-1 sm:max-w-64 sm:items-end sm:text-right">
+          <span className="max-sm:hidden">
+            <Avatars ids={best.participantIds} people={people} />
+          </span>
+          <span className="text-sm wrap-break-word">
+            {best.participantIds.length} {messages.board.outOf} {people.length}: {namesOf(best.participantIds)}
+          </span>
+          {bestMissing.length > 0 && (
+            <span className="text-xs text-muted-foreground wrap-break-word">
+              {bestMissing.length === 1 ? copy.cannot : copy.cannotPlural}: {namesOf(bestMissing)}
+            </span>
           )}
         </span>
       </button>
 
       {options.length > 0 && (
-        <div className="flex items-center gap-2 overflow-x-auto border-t bg-muted/30 px-4 py-2.5 sm:px-5">
-          <span className="shrink-0 text-xs text-muted-foreground">{copy.alternatives}</span>
-          {options.map((time) => (
+        <button
+          type="button"
+          aria-expanded={showOnPhone}
+          onClick={() => setShowOnPhone((value) => !value)}
+          className="flex w-full items-center justify-between border-t bg-muted/30 px-4 py-2.5 text-xs font-medium text-muted-foreground outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring sm:hidden"
+        >
+          {copy.showOptions} ({options.length})
+          <ChevronDown className={cn("size-3.5 transition-transform", showOnPhone && "rotate-180")} aria-hidden="true" />
+        </button>
+      )}
+      {options.length > 0 && (
+        <div className={cn("border-t bg-muted/30 px-2 py-2 sm:block sm:px-3", !showOnPhone && "hidden")}>
+          <h3 className="px-2 pt-1 pb-1.5 text-xs font-medium text-muted-foreground">{copy.alternatives}</h3>
+          <ol className="flex flex-col">
+            {visibleOptions.map((time) => {
+              const missing = missingFrom(time.participantIds);
+
+              return (
+                <li key={time.startKey + time.participantIds.join()}>
+                  <button
+                    type="button"
+                    onMouseEnter={() => onFocusTime(time)}
+                    onMouseLeave={() => onFocusTime(null)}
+                    onFocus={() => onFocusTime(time)}
+                    onBlur={() => onFocusTime(null)}
+                    className="grid w-full grid-cols-[auto_minmax(0,1fr)] items-center gap-x-3 gap-y-0.5 rounded-lg px-2 py-2 text-left transition-colors outline-none hover:bg-card focus-visible:ring-2 focus-visible:ring-ring sm:grid-cols-[3rem_minmax(0,1fr)_auto]"
+                  >
+                    <span className="row-span-2 rounded-md bg-muted px-1.5 py-1 text-center text-xs font-semibold tabular-nums sm:row-span-1">
+                      {time.participantIds.length}/{people.length}
+                    </span>
+                    <span className="min-w-0 text-sm font-medium wrap-break-word">
+                      {namesOf(time.participantIds)}
+                      {missing.length > 0 && (
+                        <span className="block text-xs font-normal text-muted-foreground">
+                          {missing.length === 1 ? copy.cannot : copy.cannotPlural}: {namesOf(missing)}
+                        </span>
+                      )}
+                    </span>
+                    <span className="col-start-2 text-sm tabular-nums sm:col-start-auto sm:text-right">
+                      <span className="font-medium">
+                        {weekdayOf(time.startKey)} {dayNumber.format(parseDate(time.startKey))}
+                      </span>
+                      <span className="ml-1.5 text-muted-foreground">{hoursOf(time)}</span>
+                    </span>
+                  </button>
+                </li>
+              );
+            })}
+          </ol>
+          {options.length > VISIBLE_OPTIONS && (
             <button
-              key={time.startKey + time.participantIds.join()}
               type="button"
-              onMouseEnter={() => onFocusTime(time)}
-              onMouseLeave={() => onFocusTime(null)}
-              onFocus={() => onFocusTime(time)}
-              onBlur={() => onFocusTime(null)}
-              title={time.participantIds.map((id) => people.find((person) => person.id === id)?.name).join(", ")}
-              className="flex shrink-0 items-center gap-2 rounded-full border bg-card py-1 pr-3 pl-2 text-xs transition-colors outline-none hover:border-foreground/30 focus-visible:ring-2 focus-visible:ring-ring"
+              onClick={() => setShowAll((value) => !value)}
+              className="mt-0.5 flex items-center gap-1 rounded-lg px-2 py-1.5 text-xs font-medium text-muted-foreground transition-colors outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
             >
-              <span className="rounded-full bg-muted px-1.5 py-0.5 font-medium tabular-nums">
-                {time.participantIds.length}/{people.length}
-              </span>
-              <span className="font-medium">
-                {weekdayOf(time.startKey)} {dayNumber.format(parseDate(time.startKey))}
-              </span>
-              <span className="text-muted-foreground tabular-nums">{hoursOf(time)}</span>
+              <ChevronDown className={cn("size-3.5 transition-transform", showAll && "rotate-180")} aria-hidden="true" />
+              {showAll ? copy.showFewer : `${copy.showMore} (${options.length - VISIBLE_OPTIONS})`}
             </button>
-          ))}
+          )}
         </div>
       )}
     </section>

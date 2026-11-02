@@ -2,6 +2,7 @@ import { ArrowRight, Link2, Users, UsersRound } from "lucide-react";
 import Link from "next/link";
 import { WeekPreview } from "@/components/landing/week-preview";
 import { Logo } from "@/components/logo";
+import { ThemeToggle } from "@/components/theme-toggle";
 import { buttonVariants } from "@/components/ui/button";
 import { messages } from "@/i18n";
 import { cn } from "@/lib/utils";
@@ -15,9 +16,12 @@ export default function Home() {
     <div className="mx-auto flex w-full max-w-6xl flex-1 flex-col px-4 md:px-8">
       <header className="flex items-center justify-between py-5">
         <Logo />
-        <Link href="/login" className={buttonVariants({ variant: "ghost" })}>
-          {landing.login}
-        </Link>
+        <div className="flex items-center gap-1">
+          <ThemeToggle />
+          <Link href="/login" className={buttonVariants({ variant: "ghost" })}>
+            {landing.login}
+          </Link>
+        </div>
       </header>
       <main className="flex flex-1 flex-col justify-center gap-16 py-10 md:py-16">
         <section className="grid items-center gap-10 lg:grid-cols-2 lg:gap-16">

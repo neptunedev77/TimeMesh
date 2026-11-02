@@ -1,8 +1,9 @@
 "use client";
 
-import { Copy, Eraser, Sparkles, Undo2 } from "lucide-react";
+import { ChevronDown, Copy, Eraser, Sparkles, Undo2 } from "lucide-react";
 import { type FormEvent, useState } from "react";
 import { messages } from "@/i18n";
+import { cn } from "@/lib/utils";
 
 const copy = messages.board.quick;
 
@@ -25,6 +26,7 @@ const iconButtonStyle =
 export function QuickBar({ canCopy, canUndo, canClear, onApply, onCopyPrevious, onUndo, onClear }: QuickBarProps) {
   const [text, setText] = useState("");
   const [hasError, setHasError] = useState(false);
+  const [isOpen, setIsOpen] = useState(false);
 
   function submit(event: FormEvent) {
     event.preventDefault();
@@ -37,6 +39,20 @@ export function QuickBar({ canCopy, canUndo, canClear, onApply, onCopyPrevious, 
 
   return (
     <div className="flex flex-col gap-2.5">
+      {/* On phones this stays folded, so the grid is what you see first. */}
+      <button
+        type="button"
+        aria-expanded={isOpen}
+        onClick={() => setIsOpen((value) => !value)}
+        className="flex items-center justify-between rounded-xl border bg-card px-3.5 py-2.5 text-sm font-medium shadow-xs outline-none focus-visible:ring-2 focus-visible:ring-ring md:hidden"
+      >
+        <span className="flex items-center gap-2">
+          <Sparkles className="size-4 text-muted-foreground" aria-hidden="true" />
+          {copy.toggle}
+        </span>
+        <ChevronDown className={cn("size-4 transition-transform", isOpen && "rotate-180")} aria-hidden="true" />
+      </button>
+      <div className={cn("flex-col gap-2.5 md:flex", isOpen ? "flex" : "hidden")}>
       <form onSubmit={submit} className="relative">
         <Sparkles className="pointer-events-none absolute top-1/2 left-3.5 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
         <input
@@ -79,6 +95,7 @@ export function QuickBar({ canCopy, canUndo, canClear, onApply, onCopyPrevious, 
             {copy.clear}
           </button>
         </div>
+      </div>
       </div>
     </div>
   );

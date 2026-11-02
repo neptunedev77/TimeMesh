@@ -1,11 +1,15 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { Logo } from "@/components/logo";
+import { ThemeToggle } from "@/components/theme-toggle";
 import { cn } from "@/lib/utils";
 
 export function PublicShell({ children, wide }: { children: ReactNode; wide?: boolean }) {
   return (
-    <div className="flex flex-1 flex-col items-center px-4 py-6">
+    <div className="relative flex flex-1 flex-col items-center px-4 py-6">
+      <div className="absolute top-4 right-4">
+        <ThemeToggle />
+      </div>
       <Link href="/" className="mb-6">
         <Logo />
       </Link>

@@ -10,6 +10,13 @@
 | Saving | Automatic, about half a second after a change. Each save replaces that week atomically through a database function. |
 | Live updates | The board asks for the group's hours every 5 seconds while visible. Supabase Realtime isn't used, because guests have no session. |
 | Best times | Bigger groups first, then longer periods, then earliest. Calculated in the browser with the compatibility engine, so they change as you mark. |
+| Grid bars | A column is shared only by the people present at that time, so someone alone fills it. |
+| Large groups | From 5 people the grid shows counts by intensity instead of per-person bars, because the bars become too narrow. |
+| Past hours | Can't be changed and aren't suggested. They stay visible, faded. |
+| Visible hours | 09:00–23:00 by default, widened to fit marked hours. The range updates only after a gesture ends, so rows don't move under the pointer. |
+| Phones | Show one day at a time by default, with a strip beside the cells for scrolling, since dragging on cells marks them. |
+| Hiding people | The eye icon only changes what the grid shows on that screen. It isn't saved, and the shared times still count everyone. |
+| Theme | Follows the device until someone chooses light or dark, and that choice is kept in the browser. |
 | Visibility | Everyone in a project can see each person's hours. |
 | Sharing | New projects let any participant share the invitation link. |
 | Invitations | By link only; the app doesn't send invitation emails. |

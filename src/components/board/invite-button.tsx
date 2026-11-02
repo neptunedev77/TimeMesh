@@ -26,9 +26,9 @@ export function InviteButton({ url }: { url: string }) {
   }
 
   return (
-    <Button type="button" onClick={copy} className="h-10 gap-2 px-4 transition-all">
+    <Button type="button" onClick={copy} aria-label={copied ? copiedLabel : button} className="h-10 shrink-0 gap-2 px-3 transition-all sm:px-4">
       {copied ? <Check aria-hidden="true" /> : <Link2 aria-hidden="true" />}
-      <span aria-live="polite">{copied ? copiedLabel : button}</span>
+      <span aria-live="polite" className="max-sm:hidden">{copied ? copiedLabel : button}</span>
     </Button>
   );
 }
