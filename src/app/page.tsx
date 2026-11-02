@@ -13,8 +13,11 @@ export default function Home() {
 
   return (
     <div className="mx-auto flex w-full max-w-6xl flex-1 flex-col px-4 md:px-8">
-      <header className="py-5">
+      <header className="flex items-center justify-between py-5">
         <Logo />
+        <Link href="/login" className={buttonVariants({ variant: "ghost" })}>
+          {landing.login}
+        </Link>
       </header>
       <main className="flex flex-1 flex-col justify-center gap-16 py-10 md:py-16">
         <section className="grid items-center gap-10 lg:grid-cols-2 lg:gap-16">

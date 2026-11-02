@@ -4,6 +4,6 @@ export default defineConfig({
   resolve: { tsconfigPaths: true },
   test: {
     environment: "jsdom",
-    exclude: ["node_modules", ".next"],
+    exclude: ["node_modules", ".next", "tests/db"],
   },
 });
