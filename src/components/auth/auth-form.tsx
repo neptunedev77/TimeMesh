@@ -1,8 +1,9 @@
 "use client";
 
 import { useSearchParams } from "next/navigation";
-import { startTransition, useActionState } from "react";
 import type { AuthFormState } from "@/app/(auth)/actions";
+import { FormFeedback } from "@/components/forms/form-feedback";
+import { useActionForm } from "@/components/forms/use-action-form";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -22,23 +23,13 @@ type AuthFormProps = {
 };
 
 export function AuthForm({ action, fields, submitLabel }: AuthFormProps) {
-  const [state, formAction, isPending] = useActionState(action, {});
+  const { state, isPending, formProps } = useActionForm(action, {});
   const searchParams = useSearchParams();
   const next = searchParams.get("next");
-  const error =
-    state.error ?? (searchParams.get("error") === "link" ? messages.auth.errors.linkFailed : undefined);
+  const linkError = searchParams.get("error") === "link" ? messages.auth.errors.linkFailed : undefined;
 
   return (
-    <form
-      action={formAction}
-      onSubmit={(event) => {
-        // React clears a form after its action runs; this keeps what people typed if it fails.
-        event.preventDefault();
-        const formData = new FormData(event.currentTarget);
-        startTransition(() => formAction(formData));
-      }}
-      className="flex flex-col gap-4"
-    >
+    <form {...formProps} className="flex flex-col gap-4">
       {next && <input type="hidden" name="next" value={next} />}
       {fields.map((field) => (
         <div key={field.name} className="flex flex-col gap-2">
@@ -53,16 +44,7 @@ export function AuthForm({ action, fields, submitLabel }: AuthFormProps) {
           />
         </div>
       ))}
-      {error && (
-        <p role="alert" className="text-sm text-destructive">
-          {error}
-        </p>
-      )}
-      {state.success && (
-        <p role="status" className="text-sm text-primary">
-          {state.success}
-        </p>
-      )}
+      <FormFeedback state={state} error={linkError} />
       <Button type="submit" size="lg" disabled={isPending} className="mt-2 h-11 md:h-10">
         {isPending ? messages.auth.pending : submitLabel}
       </Button>

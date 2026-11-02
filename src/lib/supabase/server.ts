@@ -18,9 +18,9 @@ export async function createClient() {
         },
         setAll(cookiesToSet) {
           try {
-            cookiesToSet.forEach(({ name, value, options }) =>
-              cookieStore.set(name, value, options),
-            );
+            cookiesToSet
+              .filter(({ name, value }) => cookieStore.get(name)?.value !== value)
+              .forEach(({ name, value, options }) => cookieStore.set(name, value, options));
           } catch {
             // Server Components cannot set cookies; the proxy refreshes the session instead.
           }

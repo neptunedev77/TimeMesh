@@ -3,23 +3,23 @@
 | Topic | Decision |
 |:--|:--|
 | Name | The product is called TimeMesh. |
+| Simplicity | A project needs only a name. Everything happens on one board, with no settings or personal profile. |
+| New project defaults | Starts on the current week's Monday and runs for a year, in 30-minute cells, in `Europe/Lisbon`. |
+| Marking hours | People mark when they can. There is no separate "unavailable" state in the interface. |
+| Saving | Automatic, about half a second after a change. Each save replaces that week atomically through a database function. |
+| Live updates | The board asks for the group's hours every 5 seconds while visible. Supabase Realtime isn't used, because guests have no session. |
+| Best times | Bigger groups first, then longer periods, then earliest. Calculated in the browser with the compatibility engine, so they change as you mark. |
+| Visibility | Everyone in a project can see each person's hours. |
+| Sharing | New projects let any participant share the invitation link. |
 | Invitations | By link only; the app doesn't send invitation emails. |
-| Guest access | Guests have no Supabase session, so trusted server code validates a hash of their token. The service-role key never reaches the browser. |
+| Single invitation link | A project shows one active link. Revoking it stops new joins; people who already joined keep access. |
+| Guest access | Guests have no Supabase session, so trusted server code validates a hash of their token. The secret key never reaches the browser. |
+| Invitation tokens | Guest personal tokens are stored only as hashes. Project link tokens stay readable to the server and host, so the link can be copied again. |
 | Lost guest link | The host generates a new personal link, which revokes the old one. |
-| Guest email | Not collected. |
-| Planning periods | `member_weeks` replaces a `planning_periods` table: weeks come from the project dates, and this stores each person's status per week. |
-| Recurring schedule scope | Per account across all its projects, shown as inherited until confirmed. Guests have one per project. |
-| Exceptions scope | Per project, so an absence must be marked in each project. |
-| Invitation tokens | Guest personal tokens are stored only as hashes. Project link tokens stay readable to the host, so the link can be copied again, and can be revoked. |
-| Availability visibility in results | Calculations run in trusted server code, so results work when individual availability is hidden. |
-| Time zones | Each project has one time zone, `Europe/Lisbon` by default. All participants see the same times. |
+| Removed members | A removed registered user can't rejoin through a link. A removed guest's link stops working. |
+| Token page headers | `/join` and `/guest` use `Referrer-Policy: same-origin`, because `no-referrer` makes browsers send `Origin: null`, which Server Actions reject. |
+| Time zones | Each project has one time zone. All participants see the same times. |
 | Storage | Instants are stored in UTC along with the project's IANA time zone, so more time zones can be added later. |
-| Recurring schedules | Stored as local wall-clock times and converted to UTC only when calculating. |
 | Nonexistent local time | Moves forward to the first valid time. |
 | Repeated local time | Uses the first occurrence, without asking the user. |
-| Availability precedence | Date-specific entries (manual or exception) beat recurring ones. Within the same level, unavailability wins. |
-| Recurring end times | An end at or before the start ends on the next day, so an equal start and end means 24 hours. |
-| Session suggestions | Larger groups first, then closest to the preferred duration, then earliest. A maximum duration shortens a suggestion and never changes the underlying results. |
-| Individual visibility | A project setting, on by default. |
-| Result updates | Revalidation or polling, not Supabase Realtime, because guests have no session. |
-| Pending invitations | With link-only invites, the dashboard shows joined projects where the user hasn't filled in availability. |
+| Kept for later | The database columns and tested logic for recurring schedules, presets and session durations remain, without any interface. |

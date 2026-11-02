@@ -2,7 +2,7 @@ import { createServerClient } from "@supabase/ssr";
 import { type NextRequest, NextResponse } from "next/server";
 import { getPublicEnv } from "@/lib/env";
 
-const PROTECTED_PATHS = ["/dashboard", "/projects", "/availability", "/sessions", "/settings"];
+const PROTECTED_PATHS = ["/dashboard", "/projects"];
 const GUEST_ONLY_PATHS = ["/login", "/register", "/forgot-password"];
 
 const matches = (pathname: string, paths: string[]) =>

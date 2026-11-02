@@ -215,7 +215,12 @@ isOneToOne: false
             [_ in never]: never
           }
           Functions: {
-            [_ in never]: never
+            "replace_availability_rules":
+{ Args: { "p_member_id": string,"p_rules": Json,"p_user_id": string }; Returns: undefined
+                           },
+"replace_week_availability":
+{ Args: { "p_entries": Json,"p_from": string,"p_member_id": string,"p_to": string,"p_week_start": string }; Returns: undefined
+                           }
           }
           Enums: {
             "availability_kind": "available"|"unavailable","entry_source": "manual"|"exception","member_role": "host"|"participant","planning_mode": "weekly"|"multi_week","project_status": "active"|"closed"|"archived","project_type": "project"|"event"|"meeting"|"work_session"|"activity"|"other","session_response": "pending"|"accepted"|"declined","session_status": "proposed"|"confirmed"|"cancelled"
